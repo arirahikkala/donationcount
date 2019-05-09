@@ -1,0 +1,1 @@
+Does problem 4 of [a silly toy file-parsing challenge](https://boyter.org/posts/file-read-challange/). Assumes that itcont.txt exists in the working directory. Also literally the first Rust code I've ever released, and I believe maaaybe the third file of Rust source I've ever touched.

@@ -1,0 +1,8 @@
+[package]
+name = "donationcount"
+version = "0.1.0"
+authors = ["Ari Rahikkala <ari.rahikkala@gmail.com>"]
+
+[dependencies]
+memmap = "0.7.0"
+rayon = "1.0.3"
