@@ -7,93 +7,66 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::str;
 
+// I don't know how well HashMap deals with iterating over very small
+// maps, but I'm pretty sure it's not optimized for that purpose.
+// Certainly special-casing singleton maps turns out to give us a
+// small but nice performance boost.
+enum Tally<'k> {
+    One(&'k [u8], u32),
+    Many(HashMap<&'k [u8], u32>)
+}
+
+fn merge<'k>(a: Tally<'k>, b: Tally<'k>) -> Tally<'k> {
+    use Tally::*;
+    match (a, b) {
+        (One(ak, av), One(bk, bv)) => {
+            if ak == bk {
+                One(ak, av + bv)
+            } else {
+                let mut r = HashMap::new();
+                r.insert(ak, av);
+                r.insert(bk, bv);
+                Many(r)
+            }
+        },
+        (One(ak, av), Many(mut bbs)) => Many({*bbs.entry(ak).or_insert(0) += av; bbs}),
+        (Many(mut aas), One(bk, bv)) => Many({*aas.entry(bk).or_insert(0) += bv; aas}),
+        (Many(aas), Many(bbs)) => {
+            let (mut small, mut large) = if aas.len() > bbs.len() { (bbs, aas) } else { (aas, bbs) };
+            for (k, v) in small.into_iter() {
+                *large.entry(k).or_insert(0) += v;
+            }
+            Many(large)
+        }
+    }
+}
+
 fn main() {
     let file = File::open("itcont.txt").unwrap();
     let mmap = unsafe { MmapOptions::new().map(&file).unwrap() };
 
-    let tally = make_chunks(&mmap).par_iter()
-        .map(|chunk| process_chunk(chunk))
-        .reduce(|| HashMap::new(), merge_tallies);
-
-    let mut best_count = 0;
-    let mut best_name = None;
-    for (name, count) in tally.iter() {
-        if *count > best_count {
-            best_name = Some(name);
-            best_count = *count;
-        }
-    }
-    if let Some(best) = best_name {
-        println!("{:?}: {:?}", str::from_utf8(best).unwrap(), best_count);
-    }
-}
-
-// divide file into slightly-bigger-than-10-megabyte chunks
-// delimited by newlines
-fn make_chunks(file: &[u8]) -> Vec<&[u8]> {
-    let mut chunks = Vec::new();
-    let mut last_chunk_end = 0;
-    let mut this_chunk_end = 0;
-    loop {
-        this_chunk_end += 10 * 1024 * 1024;
-        if this_chunk_end >= file.len() {
-            chunks.push(&file[last_chunk_end..]);
-            break;
-        } else {
-            if let Some(line_end) = find_start_of_record(1, |c| c == '\n' as u8, &file[this_chunk_end..]) {
-                this_chunk_end += line_end;
-                chunks.push(&file[last_chunk_end..this_chunk_end]);
-                last_chunk_end = this_chunk_end;
-            } else {
-                chunks.push(&file[last_chunk_end..]);
-                break;
+    if let Tally::Many(tally) = &mmap.par_split(|c| *c == '\n' as u8)
+        .map(tally_line)
+        .reduce(|| Tally::Many(HashMap::new()), merge) {
+            let best = tally.iter().max_by_key(|(_name, count)| *count);
+            if let Some((best_name, best_count)) = best {
+                println!("{:?}: {:?}", str::from_utf8(best_name).unwrap(), best_count);
             }
+
         }
-    }
-    chunks
 }
 
-fn merge_tallies<'k>(mut a: HashMap<&'k [u8], u32>, b: HashMap<&'k [u8], u32>) -> HashMap<&'k [u8], u32> {
-    for (name, count) in b.iter() {
-        *a.entry(name).or_insert(0) += count;
-    }
-    a
+fn find_name<'a>(line: &'a [u8]) -> Option<&'a [u8]> {
+    let name_part = line.split(|c| *c == '|' as u8).nth(7)?;
+    let first_name_part = name_part.split(|c| *c == ',' as u8).nth(1)?;
+    // Sometimes people don't put a space after the comma. Too bad for them.
+    first_name_part.split(|c| *c == ' ' as u8 || *c == '|' as u8).nth(1)
 }
 
-fn find_start_of_record<F>(record_index: u32, is_record_delimiter: F, line: &[u8]) -> Option<usize>
-    where F: Fn(u8) -> bool {
-    let mut seen_records = 0;
-    for (i, c) in line.iter().enumerate() {
-        if seen_records == record_index {
-            return Some(i);
-        }
-        if is_record_delimiter(*c) {
-            seen_records += 1;
-        }
+fn tally_line<'a>(line: &'a [u8]) -> Tally<'a> {
+    if let Some(name) = find_name(line) {
+        Tally::One(name, 1)
+    } else {
+        Tally::Many(HashMap::new())
     }
-    return None;
-}
-
-fn process_line<'a>(tally : &mut HashMap<&'a [u8], u32>, line : &'a [u8]) {
-    let record_7_index = find_start_of_record(7, |c| c == '|' as u8, line).unwrap();
-    if let Some(name_index) = find_start_of_record(1, |c| c == ',' as u8, &line[record_7_index..line.len()]) {
-        let name_start = record_7_index + name_index + 1;
-        if let Some(name_end) = find_start_of_record(1, |c| c == ' ' as u8 || c == '|' as u8, &line[name_start+1..line.len()]) {
-            let name = &line[name_start..name_start + name_end];
-            *tally.entry(name).or_insert(0) += 1;
-        }
-    }
-}
-
-fn process_chunk<'a>(chunk: &'a [u8]) -> HashMap<&'a [u8], u32> {
-    let mut tally = HashMap::new();
-
-    let mut last_start = 0;
-    for (i, c) in chunk.iter().enumerate() {
-        if *c == '\n' as u8 {
-            process_line(&mut tally, &chunk[last_start..i]);
-            last_start = i + 1;
-        }
-    }
-    return tally;
 }
