@@ -59,8 +59,13 @@ fn main() {
 fn find_name<'a>(line: &'a [u8]) -> Option<&'a [u8]> {
     let name_part = line.split(|c| *c == '|' as u8).nth(7)?;
     let first_name_part = name_part.split(|c| *c == ',' as u8).nth(1)?;
-    // Sometimes people don't put a space after the comma. Too bad for them.
-    first_name_part.split(|c| *c == ' ' as u8 || *c == '|' as u8).nth(1)
+
+    // Sometimes people don't put a space after the comma
+    let mut maybe_spaced = first_name_part.split(|c| *c == ' ' as u8);
+    let before_space = maybe_spaced.next();
+    let after_space = maybe_spaced.next();
+
+    after_space.or(before_space)
 }
 
 fn tally_line<'a>(line: &'a [u8]) -> Tally<'a> {
